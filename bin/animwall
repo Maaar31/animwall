@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# animwall - animated video wallpapers for stock Caelestia (via mpvpaper)
+# Unofficial. Not affiliated with the Caelestia project.
+set -u
+
+VERSION="0.1.0"
+
+# ---------------------------------------------------------------------------
+# Defaults. Override any of them in ~/.config/animwall/config
+# ---------------------------------------------------------------------------
+WALL_DIR=""                 # folder Caelestia's picker reads. Empty = auto-detect from shell.json
+VIDEO_DIR=""                # where your videos live. Empty = $WALL_DIR/anim
+THUMB_PREFIX="anim-"        # thumbnails are named <prefix><video-name>.png
+FRAME_AT=2                  # second of the video used for the thumbnail / theme colours
+OUTPUTS="*"                 # "*" = all monitors, or space separated names: "DP-1 HDMI-A-1"
+LAYER="bottom"              # mpvpaper layer (bottom or background)
+MPV_OPTIONS="no-audio loop hwdec=auto"
+BATTERY_PAUSE=1             # freeze the video while on battery
+FULLSCREEN_PAUSE=1          # freeze the video while a fullscreen window is on the active workspace (Hyprland)
+GUARD_INTERVAL=2            # seconds between pause checks
+CAELESTIA_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/caelestia/wallpaper/path.txt"
+CAELESTIA_SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/shell.json"
+
+CONFIG_FILE="${ANIMWALL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/animwall/config}"
+# shellcheck disable=SC1090
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+RUN="${XDG_RUNTIME_DIR:-/tmp}/animwall"
+mkdir -p "$RUN"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+die() { echo "animwall: $*" >&2; exit 1; }
+
+detect_wall_dir() {
+  local d=""
+  if [ -f "$CAELESTIA_SHELL_JSON" ]; then
+    d="$(sed -n 's/.*"wallpaperDir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CAELESTIA_SHELL_JSON" | head -n1)"
+  fi
+  d="${d/#\~/$HOME}"
+  d="${d//\$HOME/$HOME}"
+  printf '%s\n' "${d:-$HOME/Pictures/Wallpapers}"
+}
+
+[ -n "$WALL_DIR" ] || WALL_DIR="$(detect_wall_dir)"
+[ -n "$VIDEO_DIR" ] || VIDEO_DIR="$WALL_DIR/anim"
+
+VIDEO_EXTS=(mp4 webm mkv mov gif)
+
+find_video() {  # find_video <stem> -> prints the path of the matching video
+  local stem="$1" ext f
+  for ext in "${VIDEO_EXTS[@]}"; do
+    for f in "$VIDEO_DIR/$stem.$ext" "$VIDEO_DIR/$stem.${ext^^}"; do
+      if [ -f "$f" ]; then printf '%s\n' "$f"; return 0; fi
+    done
+  done
+  return 1
+}
+
+list_videos() {
+  find "$VIDEO_DIR" -maxdepth 1 -type f \
+    \( -iname '*.mp4' -o -iname '*.webm' -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.gif' \) 2>/dev/null | sort
+}
+
+make_thumb() {  # make_thumb <video> <png>
+  local v="$1" t="$2"
+  ffmpeg -nostdin -y -loglevel error -ss "$FRAME_AT" -i "$v" -frames:v 1 "$t" 2>/dev/null
+  if [ ! -s "$t" ]; then   # video shorter than FRAME_AT
+    rm -f "$t"
+    ffmpeg -nostdin -y -loglevel error -i "$v" -frames:v 1 "$t" 2>/dev/null
+  fi
+  [ -s "$t" ]
+}
+
+thumb_for() {  # thumb_for <video> -> thumbnail path
+  local v="$1" stem
+  stem="$(basename -- "${v%.*}")"
+  printf '%s/%s%s.png\n' "$WALL_DIR" "$THUMB_PREFIX" "$stem"
+}
+
+# ---------------------------------------------------------------------------
+# Player management (mpvpaper processes, tracked by pid)
+# ---------------------------------------------------------------------------
+live_pids() {
+  local pid
+  [ -f "$RUN/pids" ] || return 0
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "mpvpaper" ] && echo "$pid"
+  done < "$RUN/pids"
+  return 0
+}
+
+players_running() { [ -n "$(live_pids)" ]; }
+
+stop_players() {
+  local pid
+  for pid in $(live_pids); do
+    kill -CONT "$pid" 2>/dev/null   # a stopped process ignores TERM until continued
+    kill -TERM "$pid" 2>/dev/null
+  done
+  : > "$RUN/pids"
+  rm -f "$RUN/current"
+}
+
+start_players() {  # start_players <video>
+  local vid="$1" out
+  local -a outs
+  if players_running && [ "$(cat "$RUN/current" 2>/dev/null)" = "$vid|$OUTPUTS" ]; then
+    return 0   # already playing this video on these outputs
+  fi
+  stop_players
+  read -ra outs <<< "$OUTPUTS"
+  for out in "${outs[@]}"; do
+    # 9>&- : do not leak the watch lock into the player
+    mpvpaper -l "$LAYER" -o "$MPV_OPTIONS" "$out" "$vid" >/dev/null 2>&1 9>&- &
+    echo $! >> "$RUN/pids"
+  done
+  disown -a 2>/dev/null || true
+  printf '%s\n' "$vid|$OUTPUTS" > "$RUN/current"
+}
+
+signal_players() {  # signal_players STOP|CONT
+  local sig="$1" pid age
+  for pid in $(live_pids); do
+    if [ "$sig" = "STOP" ]; then
+      # let the first frame render before freezing, or the wallpaper stays black
+      age="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+      [ "${age:-0}" -lt 3 ] && continue
+    fi
+    kill -"$sig" "$pid" 2>/dev/null
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Pause conditions
+# ---------------------------------------------------------------------------
+on_battery() {
+  local f
+  for f in /sys/class/power_supply/BAT*/status; do
+    [ -r "$f" ] || continue
+    [ "$(cat "$f")" = "Discharging" ] && return 0
+  done
+  return 1
+}
+
+fullscreen_active() {
+  [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || return 1
+  command -v hyprctl >/dev/null 2>&1 || return 1
+  hyprctl activeworkspace 2>/dev/null | grep -qE 'hasfullscreen:[[:space:]]*(1|true)'
+}
+
+guard_loop() {
+  local want
+  while sleep "$GUARD_INTERVAL"; do
+    want=CONT
+    if [ "$BATTERY_PAUSE" = 1 ] && on_battery; then want=STOP; fi
+    if [ "$FULLSCREEN_PAUSE" = 1 ] && fullscreen_active; then want=STOP; fi
+    signal_players "$want"   # idempotent: safe to repeat
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_apply() {
+  # Look at the wallpaper Caelestia currently shows. If it is one of our
+  # thumbnails, play the matching video. Anything else: stop the video.
+  local p name stem vid
+  p="$(cat "$CAELESTIA_STATE" 2>/dev/null || true)"
+  name="$(basename -- "$p")"
+  if [[ "$name" == "$THUMB_PREFIX"*.png ]]; then
+    stem="${name#"$THUMB_PREFIX"}"; stem="${stem%.png}"
+    if vid="$(find_video "$stem")"; then
+      start_players "$vid"
+      return 0
+    fi
+  fi
+  stop_players
+}
+
+cmd_sync() {
+  local prune=0 v t n=0
+  [ "${1:-}" = "--prune" ] && prune=1
+  mkdir -p "$WALL_DIR" "$VIDEO_DIR"
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    t="$(thumb_for "$v")"
+    [ -s "$t" ] && continue
+    if make_thumb "$v" "$t"; then echo "thumbnail: $t"; n=$((n+1)); else echo "failed: $v" >&2; fi
+  done < <(list_videos)
+  if [ "$prune" = 1 ]; then
+    shopt -s nullglob
+    for t in "$WALL_DIR/$THUMB_PREFIX"*.png; do
+      local stem; stem="$(basename -- "$t" .png)"; stem="${stem#"$THUMB_PREFIX"}"
+      find_video "$stem" >/dev/null || { rm -f "$t"; echo "pruned: $t"; }
+    done
+    shopt -u nullglob
+  fi
+  echo "done ($n new)"
+}
+
+cmd_set() {  # animwall set <video>  -> select it in Caelestia (and play it)
+  local v t
+  [ $# -ge 1 ] || die "usage: animwall set <video>"
+  v="$(realpath -- "$1")"; [ -f "$v" ] || die "no such file: $1"
+  t="$(thumb_for "$v")"
+  mkdir -p "$WALL_DIR"
+  [ -s "$t" ] || make_thumb "$v" "$t" || die "could not extract a frame from $v"
+  caelestia wallpaper -n -f "$t"
+}
+
+cmd_random() {
+  local v
+  v="$(list_videos | shuf -n1)"
+  [ -n "$v" ] || die "no videos in $VIDEO_DIR"
+  cmd_set "$v"
+}
+
+cmd_toggle() { if players_running; then stop_players; else cmd_apply; fi; }
+
+cmd_watch() {
+  command -v inotifywait >/dev/null || die "inotify-tools is required"
+  command -v mpvpaper >/dev/null || die "mpvpaper is required"
+  exec 9>"$RUN/watch.lock"
+  flock -n 9 || { echo "animwall: watch is already running" >&2; exit 0; }
+
+  local state_dir
+  state_dir="$(dirname -- "$CAELESTIA_STATE")"
+  mkdir -p "$state_dir"
+
+  trap 'pkill -P $$ 2>/dev/null; stop_players' EXIT
+  trap 'exit 0' INT TERM
+
+  guard_loop 9>&- &
+  cmd_apply
+  while read -r _; do
+    sleep 0.2
+    cmd_apply
+  done < <(inotifywait -m -q -e close_write,moved_to,create --format '%f' "$state_dir" 9>&-)
+}
+
+cmd_status() {
+  local pids pid st
+  pids="$(live_pids)"
+  if [ -z "$pids" ]; then echo "stopped (Caelestia shows the static thumbnail)"; return 1; fi
+  echo "video: $(cut -d'|' -f1 "$RUN/current" 2>/dev/null)"
+  for pid in $pids; do
+    st="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)"
+    if [ "$st" = "T" ]; then st=paused; else st=playing; fi
+    echo "mpvpaper pid $pid: $st"
+  done
+}
+
+cmd_doctor() {
+  local bin out
+  echo "animwall $VERSION"
+  echo "config file : $CONFIG_FILE $([ -f "$CONFIG_FILE" ] || echo '(not found, using defaults)')"
+  echo "wallpaper dir: $WALL_DIR"
+  echo "video dir    : $VIDEO_DIR"
+  echo "caelestia state: $CAELESTIA_STATE"
+  echo
+  for bin in mpvpaper ffmpeg inotifywait flock caelestia; do
+    if command -v "$bin" >/dev/null 2>&1; then echo "  [ok] $bin"; else echo "  [!!] $bin is missing"; fi
+  done
+  echo
+  [ -d "$WALL_DIR" ]  && echo "  [ok] wallpaper dir exists" || echo "  [!!] wallpaper dir does not exist"
+  [ -d "$VIDEO_DIR" ] && echo "  [ok] video dir exists ($(list_videos | wc -l) videos)" || echo "  [!!] video dir does not exist"
+  [ -f "$CAELESTIA_STATE" ] && echo "  [ok] Caelestia state file found: $(cat "$CAELESTIA_STATE")" \
+                            || echo "  [!!] Caelestia state file not found (pick a wallpaper once in Caelestia)"
+  if [ -f "$CAELESTIA_SHELL_JSON" ] && ! grep -q '"wallpaperDir"' "$CAELESTIA_SHELL_JSON"; then
+    echo "  [!!] shell.json has no paths.wallpaperDir: Caelestia's picker reads ~/Pictures/Wallpapers by default"
+  fi
+  if on_battery; then echo "  [i] on battery"; else echo "  [i] on AC (or no battery detected)"; fi
+  if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
+    out="$(hyprctl activeworkspace 2>&1 | grep -E 'hasfullscreen' || true)"
+    if [ -n "$out" ]; then echo "  [ok] fullscreen detection works ($out)"
+    else echo "  [!!] hyprctl does not report 'hasfullscreen': fullscreen pause will not work"; fi
+  else
+    echo "  [i] not running under Hyprland: fullscreen pause disabled"
+  fi
+}
+
+usage() {
+  cat <<EOF
+animwall $VERSION - animated wallpapers for Caelestia
+
+  animwall sync [--prune]   make a thumbnail for every video (prune = delete orphan thumbnails)
+  animwall set <video>      select a video in Caelestia (and play it)
+  animwall random           select a random video
+  animwall watch            daemon: follows Caelestia's wallpaper, plays/stops the video, handles pausing
+  animwall apply            one-shot: sync the player with Caelestia's current wallpaper
+  animwall toggle           stop the video, or start it again
+  animwall stop             stop the video (thumbnail stays as a static wallpaper)
+  animwall status           show what is playing
+  animwall doctor           check dependencies and paths
+
+Config: $CONFIG_FILE
+EOF
+}
+
+case "${1:-help}" in
+  sync)    shift; cmd_sync "$@" ;;
+  set)     shift; cmd_set "$@" ;;
+  random)  cmd_random ;;
+  watch)   cmd_watch ;;
+  apply)   cmd_apply ;;
+  toggle)  cmd_toggle ;;
+  stop)    stop_players ;;
+  status)  cmd_status ;;
+  doctor)  cmd_doctor ;;
+  -v|--version|version) echo "animwall $VERSION" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

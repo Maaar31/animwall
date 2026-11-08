@@ -1,0 +1,23 @@
+# animwall config  ->  ~/.config/animwall/config   (plain bash, every line optional)
+
+# Folder Caelestia's wallpaper picker reads (paths.wallpaperDir in shell.json).
+# Leave empty to auto-detect it from shell.json.
+#WALL_DIR="$HOME/Pictures/Wallpapers"
+
+# Where your videos live. Default: $WALL_DIR/anim
+#VIDEO_DIR="$HOME/Pictures/Wallpapers/anim"
+
+# Monitors that get the video: "*" for all, or names from `hyprctl monitors`
+#OUTPUTS="*"
+#OUTPUTS="DP-1 HDMI-A-1"
+
+# Freeze the video on battery / when a fullscreen window is on the active workspace
+#BATTERY_PAUSE=1
+#FULLSCREEN_PAUSE=1
+
+# Second of the video used for the thumbnail (also drives Caelestia's colour scheme)
+#FRAME_AT=2
+
+# mpvpaper layer and mpv options
+#LAYER="bottom"
+#MPV_OPTIONS="no-audio loop hwdec=auto"
