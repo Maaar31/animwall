@@ -3,7 +3,8 @@
 Animated (video) wallpapers for **stock [Caelestia](https://github.com/caelestia-dots/caelestia)**, using [mpvpaper](https://github.com/GhostNaN/mpvpaper). No fork of the shell required.
 
 > Unofficial. Not affiliated with the Caelestia project.
-n![demo](demo.gif)
+
+![demo](demo.gif)
 
 ## How it works
 
@@ -43,7 +44,7 @@ sudo pacman -S ffmpeg inotify-tools
 ## Install
 
 ```sh
-git clone <your-repo-url> animwall && cd animwall
+git clone https://github.com/Maaar31/animwall.git animwall && cd animwall
 ./install.sh
 animwall doctor
 ```
@@ -139,7 +140,7 @@ animwall doctor           check dependencies, paths and detection
 - Picker shows no `anim-*` entries: `paths.wallpaperDir` in `shell.json` does not match `WALL_DIR` (see `doctor`), or you have not run `animwall sync`.
 - Thumbnail selected but nothing plays: is `animwall watch` running? (`pgrep -af "animwall watch"`)
 - Video hidden behind Caelestia's own wallpaper: keep `LAYER="bottom"` (default). It sits above Caelestia's background layer and below your windows. If it is still hidden, check the `background` section of `shell.json`.
-- Picker shows no wallpapers after a long session (even though `caelestia shell wallpaper list` is empty): restart the shell with `pkill -x qs; sleep 2; caelestia shell -d`. This is a Caelestia/Quickshell quirk, not animwall.
+- Picker shows no wallpapers after a long session (`caelestia shell wallpaper list` returns nothing): restart the shell with `pkill -x qs; sleep 2; caelestia shell -d`. This is a Caelestia/Quickshell quirk, not animwall.
 - Using fish? Do not paste bash heredocs into it. Edit files with an editor.
 
 ## Uninstall
