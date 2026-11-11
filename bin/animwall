@@ -3,7 +3,7 @@
 # Unofficial. Not affiliated with the Caelestia project.
 set -u
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 # ---------------------------------------------------------------------------
 # Defaults. Override any of them in ~/.config/animwall/config
