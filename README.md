@@ -39,7 +39,7 @@ yay -S mpvpaper
 sudo pacman -S ffmpeg inotify-tools
 ```
 
-**Tested with:** caelestia-shell 2.5.0, caelestia-cli 1.1.3, mpvpaper 1.9, Hyprland 0.56.2 (Arch Linux, fish). Pause on battery and on fullscreen verified on a laptop.
+**Tested with:** caelestia-shell 2.5.0, caelestia-cli 1.1.3, mpvpaper 1.9, Hyprland 0.56.2 and 0.57.2 (CachyOS, fish). Pause on battery and on fullscreen verified on a laptop.
 
 ## Install
 
@@ -78,20 +78,22 @@ Lua config (`~/.config/caelestia/hypr-user.lua` with the Caelestia dots, or `hyp
 
 ```lua
 hl.on("hyprland.start", function()
-  hl.exec_cmd("animwall watch")
+  hl.exec_cmd("/home/YOU/.local/bin/animwall watch")
 end)
 
-hl.bind("SUPER + SHIFT + B", hl.dsp.exec_cmd("animwall toggle"))
+hl.bind("SUPER + SHIFT + B", hl.dsp.exec_cmd("/home/YOU/.local/bin/animwall toggle"))
 ```
+
+Replace `/home/YOU` with your home directory.
 
 Classic `hyprland.conf`:
 
 ```
-exec-once = animwall watch
-bind = SUPER SHIFT, B, exec, animwall toggle
+exec-once = /home/YOU/.local/bin/animwall watch
+bind = SUPER SHIFT, B, exec, /home/YOU/.local/bin/animwall toggle
 ```
 
-If `animwall` is not found at login, use the full path (`~/.local/bin/animwall`).
+**Use the full path.** Hyprland's own `PATH` usually does not include `~/.local/bin` (your shell's `fish_add_path` / `.bashrc` only affect your terminal). With a bare `animwall`, the daemon silently never starts at login, even though `animwall watch` works fine when you run it by hand.
 Apply Lua config changes by logging out and in rather than reloading: a reload can start a second copy of your shell on some setups.
 
 **4. Pick a thumbnail** in Caelestia: open the launcher, type `>wallpaper`, choose an `anim-*` entry.
@@ -141,6 +143,7 @@ animwall doctor           check dependencies, paths and detection
 - Thumbnail selected but nothing plays: is `animwall watch` running? (`pgrep -af "animwall watch"`)
 - Video hidden behind Caelestia's own wallpaper: keep `LAYER="bottom"` (default). It sits above Caelestia's background layer and below your windows. If it is still hidden, check the `background` section of `shell.json`.
 - Picker shows no wallpapers after a long session (`caelestia shell wallpaper list` returns nothing): restart the shell with `pkill -x qs; sleep 2; caelestia shell -d`. This is a Caelestia/Quickshell quirk, not animwall.
+- Works when you start `animwall watch` by hand but not after login: Hyprland's `PATH` does not include `~/.local/bin`. Use the full path in your Hyprland config (see Setup). Check with `cat /proc/$(pgrep -x Hyprland)/environ | tr '\0' '\n' | grep '^PATH='`.
 - Using fish? Do not paste bash heredocs into it. Edit files with an editor.
 
 ## Uninstall

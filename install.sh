@@ -36,6 +36,7 @@ cat <<TXT
 Next:
   1. animwall doctor
   2. put videos in your video folder, then: animwall sync
-  3. start the daemon from your Hyprland config (see README, "Hyprland setup")
+  3. start the daemon from your Hyprland config using the FULL path: $PREFIX/bin/animwall watch
+     (Hyprland's PATH usually lacks ~/.local/bin, see README "Setup")
   4. pick an "$(grep -o 'THUMB_PREFIX="[^"]*"' "$HERE/bin/animwall" | head -n1 | cut -d'"' -f2)*" thumbnail in Caelestia's picker (launcher, then ">wallpaper")
 TXT
